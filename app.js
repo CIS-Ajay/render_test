@@ -1,61 +1,117 @@
-const express = require("express");
+const express = require('express');
+const bodyParser = require('body-parser');
+const puppeteer = require('puppeteer');
+const path = require('path');
+
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 3002;
 
-app.get("/", (req, res) => res.type('html').send(html));
+app.use(express.static('public'));
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
 
-const server = app.listen(port, () => console.log(`Example app listening on port ${port}!`));
+const LOGINURL = process.env.LOGINURL || 'https://erp.cisin.com/login.asp';
+const COMPTIMESHEETURL = process.env.COMPTIMESHEETURL || 'https://erp.cisin.com/timesheetnew.asp';
 
-server.keepAliveTimeout = 120 * 1000;
-server.headersTimeout = 120 * 1000;
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, '/public/index.html'));
+});
 
-const html = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>Hello from Render!</title>
-    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
-    <script>
-      setTimeout(() => {
-        confetti({
-          particleCount: 100,
-          spread: 70,
-          origin: { y: 0.6 },
-          disableForReducedMotion: true
-        });
-      }, 500);
-    </script>
-    <style>
-      @import url("https://p.typekit.net/p.css?s=1&k=vnd5zic&ht=tk&f=39475.39476.39477.39478.39479.39480.39481.39482&a=18673890&app=typekit&e=css");
-      @font-face {
-        font-family: "neo-sans";
-        src: url("https://use.typekit.net/af/00ac0a/00000000000000003b9b2033/27/l?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3") format("woff2"), url("https://use.typekit.net/af/00ac0a/00000000000000003b9b2033/27/d?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3") format("woff"), url("https://use.typekit.net/af/00ac0a/00000000000000003b9b2033/27/a?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3") format("opentype");
-        font-style: normal;
-        font-weight: 700;
-      }
-      html {
-        font-family: neo-sans;
-        font-weight: 700;
-        font-size: calc(62rem / 16);
-      }
-      body {
-        background: white;
-      }
-      section {
-        border-radius: 1em;
-        padding: 1em;
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        margin-right: -50%;
-        transform: translate(-50%, -50%);
-      }
-    </style>
-  </head>
-  <body>
-    <section>
-      Hello from Render!
-    </section>
-  </body>
-</html>
-`
+app.post('/submit', async (req, res) => {
+    const { email, password } = req.body;
+
+    try {
+        const result = await runPuppeteer(email, password);
+        if (result) {
+            res.json(result);
+        } else {
+            res.status(400).json({ error: 'Invalid credentials or no data found' });
+        }
+    } catch (error) {
+        console.error('Error in /submit:', error);
+        res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+});
+
+async function runPuppeteer(email, password) {
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions'],
+    });
+
+    try {
+        const page = await browser.newPage();
+
+        // Login
+        await page.goto(LOGINURL);
+        await page.type('input[name=uname]', email);
+        await page.type('input[name=pass]', password);
+        await Promise.all([
+            page.click('input.submit-login'),
+            page.waitForNavigation({ waitUntil: 'networkidle0' }),
+        ]);
+
+        // Navigate to timesheet
+        await page.goto(COMPTIMESHEETURL);
+        await page.waitForSelector('table#product-table');
+
+        // Extract data
+        const tables = await page.$$eval('table#product-table', (tables) => tables.map((table) => table.innerHTML));
+
+        if (tables.length > 0) {
+            const firstTableContent = tables[0];
+            const rows = await page.evaluate((firstTableContent) => {
+                const table = document.createElement('table');
+                table.innerHTML = firstTableContent;
+                return Array.from(table.querySelectorAll('tr')).map((row) =>
+                    Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent.trim())
+                );
+            }, firstTableContent);
+
+            const log = rows[14].slice(1).map((cell) => extractHoursAndMinutes(cell)).filter(Boolean);
+            return calcTime(log);
+        } else {
+            return false;
+        }
+    } catch (error) {
+        console.error('Error during Puppeteer operation:', error);
+        return false;
+    } finally {
+        await browser.close();
+    }
+}
+
+function extractHoursAndMinutes(text) {
+    const regex = /(\d+)\s*hrs,\s*(\d+)\s*min/;
+    const match = text.match(regex);
+    if (match) {
+        return [parseInt(match[1]), parseInt(match[2])];
+    }
+    return null;
+}
+
+function calcTime(log) {
+    const stdMinutes = 8 * 60; // Standard 8 hours in minutes
+    let totalMinutes = 0;
+
+    log.forEach(([hours, minutes]) => {
+        totalMinutes += hours * 60 + minutes;
+    });
+
+    const overtime = Math.max(0, totalMinutes - log.length * stdMinutes);
+    const shortfall = Math.max(0, log.length * stdMinutes - totalMinutes);
+
+    const otHours = Math.floor(overtime / 60);
+    const otMinutes = overtime % 60;
+    const sfHours = Math.floor(shortfall / 60);
+    const sfMinutes = shortfall % 60;
+
+    return {
+        over: `Over Time: ${otHours} hrs, ${otMinutes} min`,
+        short: `Short Time: ${sfHours} hrs, ${sfMinutes} min`,
+    };
+}
+
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});
