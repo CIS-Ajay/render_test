@@ -36,6 +36,7 @@ app.post('/submit', async (req, res) => {
 async function runPuppeteer(email, password) {
     const browser = await puppeteer.launch({
         headless: true,
+        executablePath: '/usr/bin/google-chrome',
         args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions'],
     });
 
