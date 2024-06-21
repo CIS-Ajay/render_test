@@ -1,6 +1,9 @@
-# Use an official Node runtime as a parent image
+# Use selenium/node-chrome as a parent image
 FROM selenium/node-chrome:latest
-FROM node:18
+
+# Install Node.js and npm
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get install -y nodejs
 
 # Set the working directory in the container
 WORKDIR /app
