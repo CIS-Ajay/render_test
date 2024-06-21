@@ -2,9 +2,7 @@
 FROM selenium/node-chrome:latest
 
 # Install Node.js and npm
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs
-
+FROM node:18
 # Set the working directory in the container
 WORKDIR /app
 
